@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentmint-hermes-runner"
+version = "0.4.0"
+description = "Route Hermes delegate_task(background=True) to named, persistent AgentMint subagents."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "AgentMint" }]
+keywords = ["agentmint", "hermes", "subagents", "delegation", "ai-agents", "mpp", "stripe-link", "tempo"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "httpx>=0.27",
+]
+
+[project.urls]
+Homepage = "https://github.com/mesutcelik/agentmint-hermes"
+Repository = "https://github.com/mesutcelik/agentmint-hermes"
+Issues = "https://github.com/mesutcelik/agentmint-hermes/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.7",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentmint_hermes_runner"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
