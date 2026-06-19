@@ -4,7 +4,7 @@ Python adapter that bridges Hermes' `delegate_task(background=True)` to AgentMin
 
 | Mode | What it does | Best for |
 |---|---|---|
-| **Ephemeral** *(default)* | Each `delegate_task(background=True)` hits AgentMint's server-side `agent.run.stateless`. AgentMint dispatches to a pool-backed worker, runs the prompt, wipes `/workspace`, releases the worker. Zero cold start; no client-side mint or destroy. | Stateless fan-out + cloud isolation |
+| **Ephemeral** *(default)* | Each `delegate_task(background=True)` hits AgentMint's server-side `agent.run.stateless`. AgentMint runs the prompt on a warm cloud worker, wipes state, and returns the result. Zero cold start; no client-side mint or destroy. | Stateless fan-out + cloud isolation |
 | **Persistent** | Every `delegate_task(background=True)` routes to ONE pre-minted named subagent whose `/workspace/MEMORY.md` accumulates across calls. | One long-running specialist that learns |
 | **Plugin tool** | Hermes auto-discovers a new `agentmint_delegate(agent_name, goal, ...)` tool from this package's entry-point. LLM picks the subagent per call. | Fleet of named specialists, LLM-driven routing |
 
@@ -24,9 +24,9 @@ dispatcher = AgentMintDispatcher(auth=BearerAuth(jwt=os.environ["AGENTMINT_JWT"]
 install_delegate_task_wrapper(dispatcher)   # no default_agent_name → ephemeral
 ```
 
-Each `delegate_task(background=True)` hits `agent.run.stateless` server-side. AgentMint dispatches to a pool-backed worker, polls until done, and pushes the completion to Hermes' `completion_queue`. Smoothed pricing $0.01–$0.075 per call (same band as all-inclusive `agent.run`).
+Each `delegate_task(background=True)` hits `agent.run.stateless` server-side. AgentMint runs the prompt, polls until done, and pushes the completion to Hermes' `completion_queue`. Smoothed pricing $0.01–$0.075 per call (same band as all-inclusive `agent.run`).
 
-No pre-mint step. Multiple `delegate_task` calls in flight = multiple pool members serving in parallel (pool size 3 by default; configurable server-side).
+No pre-mint step. Multiple `delegate_task` calls run in parallel transparently.
 
 ## Setup — persistent (specialist)
 

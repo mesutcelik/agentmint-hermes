@@ -1,9 +1,8 @@
 """Ephemeral mode — the default (v0.6.0+).
 
 Every `delegate_task(background=True)` call in Hermes hits the server-side
-`agent.run.stateless` method. AgentMint maintains a fixed pool of warm
-keep-alive boxes; each call acquires one, runs the prompt, wipes
-`/workspace`, and releases the box on completion. Zero cold start; no
+`agent.run.stateless` method. AgentMint runs the prompt on a warm cloud
+worker, wipes state, and returns the result. Zero cold start; no
 client-side mint or destroy.
 
 Matches Hermes-native delegate_task semantics (stateless per call) on
