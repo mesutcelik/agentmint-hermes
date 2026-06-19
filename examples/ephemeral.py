@@ -14,7 +14,7 @@ Use this when you want:
 
 Don't use this when you want a subagent that REMEMBERS across calls —
 for that, use the persistent.py setup OR the agentmint_delegate plugin
-tool (see strategy_a_plugin.py).
+tool (see plugin.py).
 
 Prerequisites:
     1. Bootstrap a Stripe-Link credit wallet (one-time, min $10):

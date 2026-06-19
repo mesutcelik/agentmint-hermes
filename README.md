@@ -6,7 +6,7 @@ Python adapter that bridges Hermes' `delegate_task(background=True)` to AgentMin
 |---|---|---|
 | **Ephemeral** *(default)* | Each `delegate_task(background=True)` mints a fresh AgentMint subagent, runs it, deletes it. Matches Hermes-native stateless semantics, runs on isolated cloud sandbox. | Stateless fan-out + cloud isolation |
 | **Persistent** | Every `delegate_task(background=True)` routes to ONE pre-minted named subagent whose `/workspace/MEMORY.md` accumulates across calls. | One long-running specialist that learns |
-| **Strategy A plugin** | Hermes auto-discovers a new `agentmint_delegate(agent_name, goal, ...)` tool from this package's entry-point. LLM picks the subagent per call. | Fleet of named specialists, LLM-driven routing |
+| **Plugin tool** | Hermes auto-discovers a new `agentmint_delegate(agent_name, goal, ...)` tool from this package's entry-point. LLM picks the subagent per call. | Fleet of named specialists, LLM-driven routing |
 
 > The Hermes-installable skill that drives this adapter lives in a separate catalog repo: **[mesutcelik/agentmint-skills](https://github.com/mesutcelik/agentmint-skills)** — `hermes skills install mesutcelik/agentmint-skills/hermes-delegate-task`. The skill references this package by its PyPI name (`pip install agentmint-hermes-runner`).
 
@@ -37,7 +37,7 @@ install_delegate_task_wrapper(dispatcher, default_agent_name="default-worker")
 
 Pre-mint `default-worker` once (`agent.create` via curl). Every `delegate_task(background=True)` lands in that one subagent forever — its MEMORY.md grows over time. ~$0.05/call after the one-time $0.10 mint.
 
-## Setup — Strategy A plugin (named fleet)
+## Setup — plugin tool (named fleet)
 
 ```python
 from agentmint_hermes_runner import AgentMintDispatcher, BearerAuth, set_dispatcher
@@ -55,7 +55,7 @@ agentmint_delegate(agent_name="support-acme",    goal="Reply to ticket #42", asy
 
 Each dispatch goes to a different named subagent (pre-minted via curl). Combine with `install_delegate_task_wrapper(dispatcher)` to ALSO have `delegate_task(background=True)` go ephemeral.
 
-See `examples/ephemeral.py`, `examples/persistent.py`, `examples/strategy_a_plugin.py` for complete operator setup snippets.
+See `examples/ephemeral.py`, `examples/persistent.py`, `examples/plugin.py` for complete operator setup snippets.
 
 ## Install
 

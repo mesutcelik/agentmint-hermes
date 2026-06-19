@@ -1,5 +1,5 @@
-"""Strategy B: wire AgentMint into Hermes so `delegate_task(background=True)`
-transparently routes to a persistent AgentMint subagent.
+"""Persistent mode: wire AgentMint into Hermes so `delegate_task(background=True)`
+transparently routes to ONE pre-minted, persistent AgentMint subagent.
 
 Prerequisites:
     1. Bootstrap an AgentMint credit wallet via link-cli (one-time, $10 min):

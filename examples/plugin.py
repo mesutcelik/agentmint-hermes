@@ -1,4 +1,4 @@
-"""Strategy A — register `agentmint_delegate` as an extra Hermes tool.
+"""Plugin tool: register `agentmint_delegate` as an extra Hermes tool.
 
 Coexists with (and is independent of) install_delegate_task_wrapper.
 The LLM gets a NEW tool alongside delegate_task:
@@ -11,8 +11,8 @@ The LLM gets a NEW tool alongside delegate_task:
     )
 
 The LLM picks the subagent by name per call. Use this when you want a
-FLEET of named persistent specialists (the persistence value prop), each
-addressable by the LLM at dispatch time.
+fleet of named persistent specialists, each addressable by the LLM at
+dispatch time.
 
 Hermes auto-discovers this plugin via the `hermes_agent.plugins`
 entry-point declared in pyproject.toml — pip-installing
