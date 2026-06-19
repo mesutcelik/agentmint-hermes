@@ -1,26 +1,61 @@
 # agentmint-hermes-runner
 
-Python adapter that routes Hermes `delegate_task(background=True)` to named, persistent AgentMint subagents.
+Python adapter that bridges Hermes' `delegate_task(background=True)` to AgentMint's cloud subagents. Three setup paths — pick one (or combine):
 
-> The Hermes-installable skill that drives this adapter lives in a separate catalog repo: **[mesutcelik/agentmint-skills](https://github.com/mesutcelik/agentmint-skills)** — install via `hermes skills install mesutcelik/agentmint-skills/hermes-delegate-task`. The skill's setup steps reference this package by its PyPI name (`pip install agentmint-hermes-runner`).
+| Mode | What it does | Best for |
+|---|---|---|
+| **Ephemeral** *(default)* | Each `delegate_task(background=True)` mints a fresh AgentMint subagent, runs it, deletes it. Matches Hermes-native stateless semantics, runs on isolated cloud sandbox. | Stateless fan-out + cloud isolation |
+| **Persistent** | Every `delegate_task(background=True)` routes to ONE pre-minted named subagent whose `/workspace/MEMORY.md` accumulates across calls. | One long-running specialist that learns |
+| **Strategy A plugin** | Hermes auto-discovers a new `agentmint_delegate(agent_name, goal, ...)` tool from this package's entry-point. LLM picks the subagent per call. | Fleet of named specialists, LLM-driven routing |
+
+> The Hermes-installable skill that drives this adapter lives in a separate catalog repo: **[mesutcelik/agentmint-skills](https://github.com/mesutcelik/agentmint-skills)** — `hermes skills install mesutcelik/agentmint-skills/hermes-delegate-task`. The skill references this package by its PyPI name (`pip install agentmint-hermes-runner`).
 
 ## Status
 
-**v0.4.0** — alpha. Auth backends: `BearerAuth` (Stripe-Link), `TempoAuth` (Tempo USDC.e). Polling-only delivery. Requires AgentMint API ≥ 0.7.0 for the `agent.run.status` polling endpoint.
+**v0.5.0** — alpha. Auth backends: `BearerAuth` (Stripe-Link), `TempoAuth` (Tempo USDC.e — Tier 1 direct only; the `delegate_task` patches require Bearer for status polling). Requires AgentMint API ≥ 0.7.0.
 
-## Three-line Hermes wiring (Strategy B)
+## Setup — ephemeral (default)
 
 ```python
 import os
-from agentmint_hermes_runner import (
-    AgentMintDispatcher, BearerAuth, install_delegate_task_wrapper,
-)
+from agentmint_hermes_runner import AgentMintDispatcher, BearerAuth, install_delegate_task_wrapper
 
+dispatcher = AgentMintDispatcher(auth=BearerAuth(jwt=os.environ["AGENTMINT_JWT"]))
+install_delegate_task_wrapper(dispatcher)   # no default_agent_name → ephemeral
+```
+
+Each `delegate_task(background=True)` mints a fresh `ephem-<uuid>` subagent, dispatches, polls until done, pushes the completion to Hermes' `completion_queue`, and deletes the subagent. ~$0.16 USDC per call (0.10 create + 0.05 run + 0.01 delete).
+
+No pre-mint step. Multiple `delegate_task` calls in flight = multiple isolated subagents in parallel.
+
+## Setup — persistent (specialist)
+
+```python
 dispatcher = AgentMintDispatcher(auth=BearerAuth(jwt=os.environ["AGENTMINT_JWT"]))
 install_delegate_task_wrapper(dispatcher, default_agent_name="default-worker")
 ```
 
-Every `delegate_task(background=True)` inside Hermes now routes to AgentMint's `default-worker` subagent. Its `/workspace/MEMORY.md` accumulates across every delegation. A daemon thread polls `agent.run.status` (free, Bearer-only) every 5 s and pushes completions onto Hermes' `completion_queue` directly. No HTTPS endpoint, no webhook secret.
+Pre-mint `default-worker` once (`agent.create` via curl). Every `delegate_task(background=True)` lands in that one subagent forever — its MEMORY.md grows over time. ~$0.05/call after the one-time $0.10 mint.
+
+## Setup — Strategy A plugin (named fleet)
+
+```python
+from agentmint_hermes_runner import AgentMintDispatcher, BearerAuth, set_dispatcher
+
+dispatcher = AgentMintDispatcher(auth=BearerAuth(jwt=os.environ["AGENTMINT_JWT"]))
+set_dispatcher(dispatcher)   # registers agentmint_delegate via the entry-point
+```
+
+Hermes' plugin discovery (`hermes_agent.plugins` entry-point) auto-registers `agentmint_delegate` when this package is pip-installed. The LLM can now call:
+
+```
+agentmint_delegate(agent_name="reviewer-myrepo", goal="Review the diff", async_=True)
+agentmint_delegate(agent_name="support-acme",    goal="Reply to ticket #42", async_=True)
+```
+
+Each dispatch goes to a different named subagent (pre-minted via curl). Combine with `install_delegate_task_wrapper(dispatcher)` to ALSO have `delegate_task(background=True)` go ephemeral.
+
+See `examples/ephemeral.py`, `examples/persistent.py`, `examples/strategy_a_plugin.py` for complete operator setup snippets.
 
 ## Install
 
@@ -36,17 +71,11 @@ pytest
 ruff check .
 ```
 
-## Surface
+## Lower-level surface
+
+If you want to drive AgentMint directly without the `delegate_task` patch or the plugin tool:
 
 ```python
-from agentmint_hermes_runner import (
-    AgentMintDispatcher,
-    BearerAuth, TempoAuth,
-    Task,
-    install_delegate_task_wrapper,
-)
-
-# Single dispatch (Hermes delegate_task analog):
 result = dispatcher.dispatch(
     agent_name="reviewer-myrepo",
     goal="Review the diff and flag risks.",
@@ -70,8 +99,9 @@ results = dispatcher.dispatch_batch(
 
 ## Known unsupported
 
-- **`toolsets=["web"]`** — no canonical AgentMint web-fetch skill yet. The supported harnesses (claude-code / codex / opencode) have built-in web access, but we don't expose a Hermes-symmetric toolset for it. Raises `UnsupportedToolset` at compose time.
+- **`toolsets=["web"]`** — no canonical AgentMint web-fetch skill yet. Raises `UnsupportedToolset`.
 - **`max_spawn_depth`** — AgentMint sandboxes aren't structurally bounded by depth.
+- **Tempo + the `delegate_task` patches** — polling against `agent.run.status` is Bearer-only. Tempo customers can use Tier 1 (direct curl) but not the install/plugin paths above. A future hybrid-auth release may close this.
 
 ## License
 

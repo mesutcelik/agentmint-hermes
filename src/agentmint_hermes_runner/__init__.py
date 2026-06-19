@@ -8,6 +8,7 @@ from .exceptions import (
     UnsupportedToolset,
 )
 from .hermes_patch import install_delegate_task_wrapper
+from .hermes_plugin import set_dispatcher
 from .models import AgentRecord, DispatchResult, Task
 from .translation import (
     DEFAULT_TOOLSETS,
@@ -17,7 +18,7 @@ from .translation import (
     compose_prompt,
 )
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "AgentMintDispatcher",
@@ -36,5 +37,6 @@ __all__ = [
     "TOOLSET_RESTRICTION_HINTS",
     "UNSUPPORTED_TOOLSETS",
     "install_delegate_task_wrapper",
+    "set_dispatcher",
     "__version__",
 ]
