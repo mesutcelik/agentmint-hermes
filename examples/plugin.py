@@ -67,13 +67,14 @@ def main() -> None:
     # delegate_task(background=True)).
 
     # OPTIONAL: combine with install_delegate_task_wrapper to ALSO patch
-    # delegate_task — that lets the LLM use whichever tool is appropriate:
+    # delegate_task — that lets the LLM dispatch via Hermes' native tool too:
     #
-    #   - delegate_task(background=True)        → ephemeral cloud subagent
-    #   - agentmint_delegate(agent_name=..., …) → named persistent specialist
+    #   - delegate_task(background=True, toolsets=["agentmint-X", ...])
+    #         → routes to subagent X
+    #   - agentmint_delegate(agent_name="X", …) → same, but cleaner
     #
     # from agentmint_hermes_runner import install_delegate_task_wrapper
-    # install_delegate_task_wrapper(dispatcher)   # ephemeral mode
+    # install_delegate_task_wrapper(dispatcher, default_agent_name="default-worker")
 
 
 if __name__ == "__main__":

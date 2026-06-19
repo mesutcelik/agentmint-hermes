@@ -169,7 +169,7 @@ def register(ctx: Any) -> None:
             "every call — use this when you want a specialist that "
             "REMEMBERS prior delegations (PR reviewer that learns your "
             "repo, support agent that remembers a customer's history, "
-            "etc.). For stateless one-shot delegation, use Hermes' "
+            "etc.). For one-shot delegation without persistence, use Hermes' "
             "built-in delegate_task instead."
         ),
         emoji="🧠",

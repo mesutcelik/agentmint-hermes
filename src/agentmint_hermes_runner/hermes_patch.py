@@ -1,30 +1,33 @@
 """Monkey-patch Hermes' `tools.async_delegation.dispatch_async_delegation` so
-every `delegate_task(background=True, single-task)` routes through an
-AgentMint cloud subagent.
+`delegate_task(background=True)` routes to a named, persistent AgentMint
+subagent.
 
-Two modes:
+The LLM picks the target subagent in one of two ways:
 
-- **ephemeral** (default): every call hits the server-side `agent.run.stateless`
-  endpoint. AgentMint dispatches to a pool-backed worker, runs the prompt,
-  wipes `/workspace`, and releases the worker. Matches Hermes-native
-  delegate_task semantics (stateless per call) on isolated cloud sandboxes.
-  Requires AgentMint API ≥ 0.8.0.
-- **persistent**: every call routes to the same named subagent
-  (`default_agent_name`). Its `/workspace/MEMORY.md` accumulates across
-  delegations — use for one long-lived specialist.
+1. **Default routing** — operator sets `default_agent_name="..."` at install
+   time; every background dispatch lands in that one subagent.
 
-Mode is auto-detected when not specified: presence of `default_agent_name`
-implies persistent; absence implies ephemeral.
+2. **Per-call routing via the `toolsets` argument** (workaround) — the LLM
+   includes `"agentmint-<subagent-name>"` in the `toolsets` list:
 
-Sync `delegate_task` is untouched (Hermes-native fan-out / batch behaviour
-preserved). Multi-task `background=True` is rejected upstream in Hermes
-itself, so we never see it.
+       delegate_task(background=True, goal="Review the diff",
+                     toolsets=["terminal", "file", "agentmint-pr-reviewer"])
+
+   The adapter parses the `agentmint-*` entry, routes to that subagent
+   (NOT the default), and strips the entry from the toolsets list before
+   the prompt is composed. This is an explicit hack because Hermes'
+   `delegate_task` has no native dispatcher-target parameter. We've
+   submitted an upstream proposal — see docs/hermes-feature-request.md.
+
+If neither default nor toolset routing yields a name, the patch falls
+through to Hermes-native `delegate_task` (no AgentMint involvement).
 
 Completion delivery: polling against AgentMint's `agent.run.status`
 endpoint (Bearer-only, free). No public HTTPS endpoint, no webhook secret,
 no HTTP route to register.
 """
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -36,13 +39,15 @@ logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timeout"})
 
-_VALID_MODES = frozenset({"ephemeral", "persistent"})
+# Matches `agentmint-<name>` where <name> follows AgentMint's
+# AGENT_NAME_RE on the server side: lowercase alphanumeric, dash,
+# underscore; 1-40 chars; must start with [a-z0-9].
+_AGENTMINT_TOOLSET_RE = re.compile(r"^agentmint-([a-z0-9][a-z0-9_-]{0,39})$")
 
 
 def install_delegate_task_wrapper(
     dispatcher: AgentMintDispatcher,
     default_agent_name: str | None = None,
-    mode: str | None = None,
     poll_interval: float = 5.0,
 ) -> Callable[[], None]:
     """Patch Hermes' async-delegation rail to route through AgentMint.
@@ -56,24 +61,14 @@ def install_delegate_task_wrapper(
     dispatcher : AgentMintDispatcher
         Pre-built dispatcher with auth attached.
     default_agent_name : str | None
-        Persistent mode only — name of the pre-minted AgentMint subagent
-        every background delegation routes to. The subagent's
-        `/workspace/MEMORY.md` accumulates context across all delegations.
-        Omit to use ephemeral mode.
-    mode : "ephemeral" | "persistent" | None
-        Explicit mode selection. If None, inferred from `default_agent_name`
-        (set → persistent; unset → ephemeral).
+        Fallback subagent name used when the LLM doesn't include an
+        `agentmint-<name>` entry in the `toolsets` argument. If both
+        the LLM-provided routing and `default_agent_name` are absent,
+        the patch falls through to Hermes-native delegate_task.
     poll_interval : float
-        Seconds between `agent.run.status` polls (default 5.0). The
-        polling thread uses exponential backoff on errors up to 60s.
+        Seconds between `agent.run.status` polls (default 5.0). Polling
+        thread uses exponential backoff on errors up to 60s.
     """
-    if mode is None:
-        mode = "persistent" if default_agent_name else "ephemeral"
-    if mode not in _VALID_MODES:
-        raise ValueError(f"mode must be one of {_VALID_MODES}, got {mode!r}")
-    if mode == "persistent" and not default_agent_name:
-        raise ValueError("mode='persistent' requires default_agent_name")
-
     try:
         import tools.async_delegation as _ad
     except ImportError as e:
@@ -88,29 +83,31 @@ def install_delegate_task_wrapper(
     def patched(**kwargs: Any) -> dict:
         goal = kwargs.get("goal", "")
         context = kwargs.get("context")
-        toolsets = kwargs.get("toolsets")
         role = kwargs.get("role")
         model = kwargs.get("model")
         session_key = kwargs.get("session_key", "")
+        toolsets = kwargs.get("toolsets")
+
+        name_override, scrubbed_toolsets = _extract_target_from_toolsets(toolsets)
+        target_name = name_override or default_agent_name
+        if not target_name:
+            # No routing target — let Hermes handle natively.
+            return original(**kwargs)
+
+        if name_override:
+            logger.info(
+                "agentmint-hermes: toolset routing -> %s (workaround; "
+                "track upstream proposal in docs/hermes-feature-request.md)",
+                name_override,
+            )
 
         try:
-            if mode == "persistent":
-                return _dispatch_persistent(
-                    dispatcher=dispatcher,
-                    agent_name=default_agent_name,
-                    goal=goal,
-                    context=context,
-                    toolsets=toolsets,
-                    role=role,
-                    model=model,
-                    session_key=session_key,
-                    poll_interval=poll_interval,
-                )
-            return _dispatch_ephemeral(
+            return _dispatch_persistent(
                 dispatcher=dispatcher,
+                agent_name=target_name,
                 goal=goal,
                 context=context,
-                toolsets=toolsets,
+                toolsets=scrubbed_toolsets,
                 role=role,
                 model=model,
                 session_key=session_key,
@@ -125,14 +122,49 @@ def install_delegate_task_wrapper(
     _ad.dispatch_async_delegation = patched
     logger.info(
         "agentmint-hermes: installed delegate_task wrapper "
-        "(mode=%s, default_agent=%s, poll_interval=%.1fs)",
-        mode, default_agent_name or "<none>", poll_interval,
+        "(default_agent=%s, poll_interval=%.1fs, toolset_routing=enabled)",
+        default_agent_name or "<none>", poll_interval,
     )
 
     def uninstall() -> None:
         _ad.dispatch_async_delegation = original
 
     return uninstall
+
+
+def _extract_target_from_toolsets(
+    toolsets: list[str] | None,
+) -> tuple[str | None, list[str] | None]:
+    """Parse `toolsets` for an `agentmint-<name>` routing directive.
+
+    Returns `(agent_name | None, scrubbed_toolsets | None)`. First match
+    wins; any additional `agentmint-*` entries are logged + stripped.
+    Non-string entries are passed through untouched. If `toolsets` is None
+    or empty, returns `(None, toolsets)` without allocating.
+    """
+    if not toolsets:
+        return None, toolsets
+
+    name: str | None = None
+    out: list[str] = []
+    for t in toolsets:
+        if not isinstance(t, str):
+            out.append(t)
+            continue
+        m = _AGENTMINT_TOOLSET_RE.match(t)
+        if m is None:
+            out.append(t)
+            continue
+        if name is None:
+            name = m.group(1)
+        else:
+            logger.warning(
+                "agentmint-hermes: multiple agentmint-* toolsets in one call; "
+                "using first (%s), ignoring %s",
+                name, t,
+            )
+        # Strip both first-match and subsequent duplicates from scrubbed list.
+    return name, out
 
 
 def _dispatch_persistent(
@@ -174,54 +206,7 @@ def _dispatch_persistent(
         "goal": goal,
         "mode": "background",
         "source": "agentmint",
-    }
-
-
-def _dispatch_ephemeral(
-    *,
-    dispatcher: AgentMintDispatcher,
-    goal: str,
-    context: str | None,
-    toolsets: list[str] | None,
-    role: str | None,
-    model: str | None,
-    session_key: str,
-    poll_interval: float,
-) -> dict:
-    """Single server-side call to `agent.run.stateless`. AgentMint handles
-    the entire lifecycle (acquire pool member → run → wipe /workspace →
-    release). The adapter only polls for completion to push back into
-    Hermes' completion_queue."""
-    result = dispatcher.dispatch_stateless(
-        goal=goal,
-        context=context,
-        toolsets=toolsets,
-        role=role or "leaf",
-        async_=True,
-        hermes_context={
-            "session_key": session_key,
-            "model": model,
-            "ephemeral": True,
-        },
-    )
-    run_id = result.run_id or result.delegation_id
-    if not run_id:
-        raise RuntimeError("AgentMint stateless dispatch returned no run_id")
-
-    _spawn_poller(
-        dispatcher=dispatcher,
-        run_id=run_id,
-        goal=goal,
-        context=context,
-        session_key=session_key,
-        poll_interval=poll_interval,
-    )
-    return {
-        "status": "dispatched",
-        "delegation_id": run_id,
-        "goal": goal,
-        "mode": "background",
-        "source": "agentmint",
+        "agent_name": agent_name,
     }
 
 
@@ -244,12 +229,9 @@ def _spawn_poller(
     """
     HARD_CAP_SECONDS = 30 * 60
 
-    # Capture Hermes' completion hooks AT SPAWN TIME (not per-push). This
-    # prevents a long-running poller from accidentally pushing into a
-    # newer module reference if `tools.async_delegation` is rebound at
-    # runtime (e.g. during tests with monkeypatch fixtures, or if Hermes
-    # hot-reloads modules — neither is supposed to happen, but it makes
-    # the poller robust to it).
+    # Capture Hermes' completion hooks AT SPAWN TIME so a long-running
+    # poller doesn't push into a newer module reference if
+    # `tools.async_delegation` is rebound (e.g. during tests).
     try:
         from tools.async_delegation import (
             _push_completion_event as _captured_push,

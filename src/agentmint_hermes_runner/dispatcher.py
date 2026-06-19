@@ -62,43 +62,6 @@ class AgentMintDispatcher:
         """
         return self.client.call("agent.run.status", {"run_id": run_id})
 
-    # ----- stateless dispatch (pool-backed, server-side ephemeral) -------
-
-    def dispatch_stateless(
-        self,
-        goal: str,
-        context: str | None = None,
-        toolsets: list[str] | None = None,
-        role: str = "leaf",
-        max_iterations: int | None = None,
-        files: list[dict] | None = None,
-        cleanup_paths: list[str] | None = None,
-        async_: bool = False,
-        hermes_context: dict | None = None,
-    ) -> DispatchResult:
-        """Dispatch a stateless (pool-backed) call — no name required.
-
-        Hits `agent.run.stateless` server-side (API >= 0.8.0). AgentMint
-        picks a pool member, runs the prompt, wipes /workspace, and
-        releases the worker. Pricing reuses the smoothed all-inclusive
-        model keyed at the principal level.
-
-        Bearer-only / Stripe-Link-only. Persona / skills / BYOK forbidden
-        (server rejects).
-        """
-        prompt = compose_prompt(goal, context, toolsets, role, max_iterations)
-        params: dict[str, Any] = {"prompt": prompt}
-        if files:
-            params["files"] = files
-        if cleanup_paths:
-            params["cleanup_paths"] = cleanup_paths
-        if async_:
-            params["async"] = True
-        if hermes_context:
-            params["metadata"] = {"hermes": hermes_context}
-        result = self.client.call("agent.run.stateless", params)
-        return DispatchResult.from_dict(result or {})
-
     # ----- single dispatch -----------------------------------------------
 
     def dispatch(
