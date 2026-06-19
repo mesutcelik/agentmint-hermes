@@ -2,7 +2,7 @@
 
 Python adapter that routes Hermes `delegate_task(background=True)` to named, persistent AgentMint subagents.
 
-> The Hermes-installable skill that drives this adapter lives in a separate catalog repo: **[mesutcelik/agentmint-skills](https://github.com/mesutcelik/agentmint-skills)** — install via `hermes skills install mesutcelik/agentmint-skills/agentmint-hermes`. The skill's setup steps reference this package by its PyPI name (`pip install agentmint-hermes-runner`).
+> The Hermes-installable skill that drives this adapter lives in a separate catalog repo: **[mesutcelik/agentmint-skills](https://github.com/mesutcelik/agentmint-skills)** — install via `hermes skills install mesutcelik/agentmint-skills/hermes-delegate-task`. The skill's setup steps reference this package by its PyPI name (`pip install agentmint-hermes-runner`).
 
 ## Status
 
