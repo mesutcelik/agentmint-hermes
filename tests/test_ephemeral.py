@@ -1,9 +1,9 @@
 """Tests for ephemeral mode of install_delegate_task_wrapper.
 
-Ephemeral lifecycle: per `delegate_task(background=True)` call, the patch
-mints a fresh subagent with a uuid name, dispatches, polls, then deletes
-on completion. Verifies the create → dispatch → delete sequence and that
-failures clean up orphan subagents.
+In v0.6.0+, ephemeral mode dispatches a SINGLE call to the server-side
+`agent.run.stateless` method. AgentMint owns the pool + the lifecycle;
+the adapter just dispatches and polls. No client-side agent.create or
+agent.delete.
 """
 import json
 import sys
@@ -41,15 +41,11 @@ class TrackingAuth:
                 "error": {"code": "boom", "message": f"simulated {rpc_method} failure"},
             }).encode()
 
-        if rpc_method == "agent.create":
+        if rpc_method == "agent.run.stateless":
             return json.dumps({
                 "jsonrpc": "2.0", "id": "x",
-                "result": {"agent_id": "agt_x", "name": params.get("name")},
-            }).encode()
-        if rpc_method == "agent.run":
-            return json.dumps({
-                "jsonrpc": "2.0", "id": "x",
-                "result": {"status": "dispatched", "run_id": "arun_xyz"},
+                "result": {"status": "dispatched", "run_id": "arun_xyz",
+                           "billed_usdc": 0.05, "stateless": True},
             }).encode()
         if rpc_method == "agent.run.status":
             self._poll_count += 1
@@ -58,8 +54,6 @@ class TrackingAuth:
                 "jsonrpc": "2.0", "id": "x",
                 "result": {"status": status, "billed_usdc": 0.05, "completed_at": 123},
             }).encode()
-        if rpc_method == "agent.delete":
-            return json.dumps({"jsonrpc": "2.0", "id": "x", "result": {}}).encode()
         return json.dumps({"jsonrpc": "2.0", "id": "x", "result": {}}).encode()
 
     def methods_called(self) -> list[str]:
@@ -101,7 +95,8 @@ def fake_hermes(monkeypatch):
     return {"async_delegation": fake_async_delegation, "push_events": push_events}
 
 
-def test_ephemeral_full_lifecycle(fake_hermes):
+def test_ephemeral_dispatches_to_stateless(fake_hermes):
+    """A single agent.run.stateless call — no create, no delete on the client."""
     from agentmint_hermes_runner.hermes_patch import install_delegate_task_wrapper
 
     auth = TrackingAuth(status_after_polls=2)
@@ -118,20 +113,20 @@ def test_ephemeral_full_lifecycle(fake_hermes):
         )
         assert result["status"] == "dispatched"
         assert result["source"] == "agentmint"
-        assert result["ephemeral_agent"].startswith("ephem-")
-        # Wait briefly for the poller to complete + cleanup
+        assert result["delegation_id"] == "arun_xyz"
+        # No ephemeral_agent in the response — server owns the box name now
+        assert "ephemeral_agent" not in result
+        # Wait briefly for the poller to complete
         time.sleep(0.2)
     finally:
         uninstall()
 
     methods = auth.methods_called()
-    # Order: create, run, status (x2 pending->completed), delete
-    assert methods[0] == "agent.create"
-    assert methods[1] == "agent.run"
+    # Order: agent.run.stateless, then agent.run.status polls. NO agent.create/agent.delete.
+    assert methods[0] == "agent.run.stateless"
     assert "agent.run.status" in methods
-    assert methods[-1] == "agent.delete"
-    # Completion event was pushed
-    assert any(e["status"] == "completed" for e in fake_hermes["push_events"])
+    assert "agent.create" not in methods
+    assert "agent.delete" not in methods
 
 
 def test_ephemeral_auto_detected_when_no_default(fake_hermes):
@@ -149,8 +144,9 @@ def test_ephemeral_auto_detected_when_no_default(fake_hermes):
             runner=lambda: None, interrupt_fn=lambda: None,
             max_async_children=3,
         )
-        # ephemeral_agent in result confirms ephemeral path was taken
-        assert "ephemeral_agent" in result
+        # agent.run.stateless was called → confirms ephemeral path was taken
+        assert "agent.run.stateless" in auth.methods_called()
+        assert result["status"] == "dispatched"
     finally:
         uninstall()
 
@@ -164,17 +160,19 @@ def test_persistent_auto_detected_when_default_set(fake_hermes):
         dispatcher, default_agent_name="default-worker", poll_interval=0.02
     )
     try:
-        result = fake_hermes["async_delegation"].dispatch_async_delegation(
+        fake_hermes["async_delegation"].dispatch_async_delegation(
             goal="hi", context=None, toolsets=None, role="leaf",
             model=None, session_key="",
             runner=lambda: None, interrupt_fn=lambda: None,
             max_async_children=3,
         )
-        # No ephemeral_agent in result; no agent.create call (uses existing)
-        assert "ephemeral_agent" not in result
-        # Persistent path skips create + delete
+        # Persistent path hits agent.run (not stateless), with the default name
         methods = auth.methods_called()
-        assert "agent.create" not in methods
+        assert "agent.run" in methods
+        assert "agent.run.stateless" not in methods
+        # First call must be agent.run with the configured name
+        run_envelope = next(c for c in auth.calls if c[0] == "agent.run")
+        assert run_envelope[1]["name"] == "default-worker"
     finally:
         uninstall()
 
@@ -195,31 +193,28 @@ def test_invalid_mode_raises(fake_hermes):
         install_delegate_task_wrapper(dispatcher, mode="banana")
 
 
-def test_ephemeral_cleans_up_on_dispatch_failure(fake_hermes):
-    """If agent.run fails after agent.create succeeded, the orphan is deleted."""
+def test_ephemeral_falls_back_to_native_on_dispatch_failure(fake_hermes):
+    """If agent.run.stateless fails, the patched function falls back to Hermes-native."""
     from agentmint_hermes_runner.hermes_patch import install_delegate_task_wrapper
 
-    auth = TrackingAuth(fail_method="agent.run")
+    auth = TrackingAuth(fail_method="agent.run.stateless")
     dispatcher = AgentMintDispatcher(auth=auth)
     uninstall = install_delegate_task_wrapper(
         dispatcher, mode="ephemeral", poll_interval=0.02
     )
     try:
-        # Should NOT raise — patched falls back to Hermes-native on inner failure
         result = fake_hermes["async_delegation"].dispatch_async_delegation(
             goal="hi", context=None, toolsets=None, role="leaf",
             model=None, session_key="",
             runner=lambda: None, interrupt_fn=lambda: None,
             max_async_children=3,
         )
-        # Fell back to Hermes-native
+        # Fell back to Hermes-native (the MagicMock canned response)
         assert result["delegation_id"] == "hermes_native_x"
     finally:
         uninstall()
 
     methods = auth.methods_called()
-    # Must contain: create (ok), run (fails), delete (cleanup) — in that order
-    assert methods[0] == "agent.create"
-    assert methods[1] == "agent.run"
-    # The orphan must have been cleaned up
-    assert "agent.delete" in methods
+    # Just one stateless attempt — no client-side cleanup needed because
+    # there's nothing to clean (server owns the pool).
+    assert methods == ["agent.run.stateless"]

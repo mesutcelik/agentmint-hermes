@@ -4,10 +4,11 @@ AgentMint cloud subagent.
 
 Two modes:
 
-- **ephemeral** (default): per-call, the adapter mints a fresh subagent with
-  a random UUID name, runs it, then deletes it on completion. Matches
-  Hermes-native delegate_task semantics (stateless subagent per call) but
-  runs on isolated AgentMint sandboxes with independent credentials.
+- **ephemeral** (default): every call hits the server-side `agent.run.stateless`
+  endpoint. AgentMint dispatches to a pool-backed worker, runs the prompt,
+  wipes `/workspace`, and releases the worker. Matches Hermes-native
+  delegate_task semantics (stateless per call) on isolated cloud sandboxes.
+  Requires AgentMint API ≥ 0.8.0.
 - **persistent**: every call routes to the same named subagent
   (`default_agent_name`). Its `/workspace/MEMORY.md` accumulates across
   delegations — use for one long-lived specialist.
@@ -26,7 +27,6 @@ no HTTP route to register.
 import logging
 import threading
 import time
-import uuid
 from collections.abc import Callable
 from typing import Any
 
@@ -43,8 +43,6 @@ def install_delegate_task_wrapper(
     dispatcher: AgentMintDispatcher,
     default_agent_name: str | None = None,
     mode: str | None = None,
-    ephemeral_harness: str = "opencode",
-    ephemeral_model: str = "openrouter/fusion",
     poll_interval: float = 5.0,
 ) -> Callable[[], None]:
     """Patch Hermes' async-delegation rail to route through AgentMint.
@@ -65,10 +63,6 @@ def install_delegate_task_wrapper(
     mode : "ephemeral" | "persistent" | None
         Explicit mode selection. If None, inferred from `default_agent_name`
         (set → persistent; unset → ephemeral).
-    ephemeral_harness : str
-        Harness used for ephemeral subagents (default `"opencode"`).
-    ephemeral_model : str
-        Model used for ephemeral subagents (default `"openrouter/fusion"`).
     poll_interval : float
         Seconds between `agent.run.status` polls (default 5.0). The
         polling thread uses exponential backoff on errors up to 60s.
@@ -120,8 +114,6 @@ def install_delegate_task_wrapper(
                 role=role,
                 model=model,
                 session_key=session_key,
-                ephemeral_harness=ephemeral_harness,
-                ephemeral_model=ephemeral_model,
                 poll_interval=poll_interval,
             )
         except Exception:
@@ -194,51 +186,27 @@ def _dispatch_ephemeral(
     role: str | None,
     model: str | None,
     session_key: str,
-    ephemeral_harness: str,
-    ephemeral_model: str,
     poll_interval: float,
 ) -> dict:
-    """Per-call lifecycle: create → dispatch → poll → delete."""
-    auto_name = f"ephem-{uuid.uuid4().hex[:12]}"
-
-    dispatcher.create(
-        name=auto_name,
-        harness=ephemeral_harness,
-        model=ephemeral_model,
+    """Single server-side call to `agent.run.stateless`. AgentMint handles
+    the entire lifecycle (acquire pool member → run → wipe /workspace →
+    release). The adapter only polls for completion to push back into
+    Hermes' completion_queue."""
+    result = dispatcher.dispatch_stateless(
+        goal=goal,
+        context=context,
+        toolsets=toolsets,
+        role=role or "leaf",
+        async_=True,
+        hermes_context={
+            "session_key": session_key,
+            "model": model,
+            "ephemeral": True,
+        },
     )
-    try:
-        result = dispatcher.dispatch(
-            agent_name=auto_name,
-            goal=goal,
-            context=context,
-            toolsets=toolsets,
-            role=role or "leaf",
-            async_=True,
-            hermes_context={
-                "session_key": session_key,
-                "model": model,
-                "ephemeral": True,
-            },
-        )
-    except Exception:
-        # Dispatch failed AFTER create succeeded — best-effort cleanup.
-        try:
-            dispatcher.delete(auto_name)
-        except Exception:
-            logger.warning(
-                "agentmint-hermes: failed to clean up orphaned ephemeral "
-                "subagent %s after dispatch error", auto_name,
-            )
-        raise
-
     run_id = result.run_id or result.delegation_id
     if not run_id:
-        # Cleanup before re-raising
-        try:
-            dispatcher.delete(auto_name)
-        except Exception:
-            pass
-        raise RuntimeError("AgentMint async dispatch returned no run_id")
+        raise RuntimeError("AgentMint stateless dispatch returned no run_id")
 
     _spawn_poller(
         dispatcher=dispatcher,
@@ -247,7 +215,6 @@ def _dispatch_ephemeral(
         context=context,
         session_key=session_key,
         poll_interval=poll_interval,
-        cleanup_agent_name=auto_name,
     )
     return {
         "status": "dispatched",
@@ -255,7 +222,6 @@ def _dispatch_ephemeral(
         "goal": goal,
         "mode": "background",
         "source": "agentmint",
-        "ephemeral_agent": auto_name,
     }
 
 
@@ -267,15 +233,10 @@ def _spawn_poller(
     context: str | None,
     session_key: str,
     poll_interval: float,
-    cleanup_agent_name: str | None = None,
 ) -> threading.Thread:
     """Background daemon thread: polls `agent.run.status` until terminal,
     then pushes a Hermes async_delegation completion event onto Hermes'
     completion_queue.
-
-    If `cleanup_agent_name` is set (ephemeral mode), also calls
-    `dispatcher.delete(cleanup_agent_name)` AFTER pushing the completion
-    event. Delete failures are logged but never raised.
 
     Returns the thread (mostly for tests). Exits on terminal status or
     after a hard cap of 30 minutes — the AgentMint run's own 30-minute
@@ -339,18 +300,6 @@ def _spawn_poller(
             run_id,
         )
 
-    def cleanup() -> None:
-        if not cleanup_agent_name:
-            return
-        try:
-            dispatcher.delete(cleanup_agent_name)
-        except Exception:
-            logger.warning(
-                "agentmint-hermes: failed to delete ephemeral subagent %s "
-                "after completion (server-side TTL will reap)",
-                cleanup_agent_name,
-            )
-
     def loop() -> None:
         backoff = poll_interval
         started = time.monotonic()
@@ -364,7 +313,6 @@ def _spawn_poller(
                 push_completion("timeout", {"task_source": {
                     "goal": goal, "context": context, "session_key": session_key,
                 }})
-                cleanup()
                 return
             try:
                 resp = dispatcher.run_status(run_id)
@@ -379,7 +327,6 @@ def _spawn_poller(
                             "session_key": session_key,
                         },
                     })
-                    cleanup()
                     return
                 # Reset backoff on a successful poll (status still pending).
                 backoff = poll_interval

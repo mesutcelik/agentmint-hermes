@@ -1,15 +1,18 @@
-"""Ephemeral mode — the default.
+"""Ephemeral mode — the default (v0.6.0+).
 
-Every `delegate_task(background=True)` call in Hermes mints a FRESH
-AgentMint subagent (auto-named with a UUID), runs it, and deletes it on
-completion. Matches Hermes-native delegate_task semantics (stateless
-per call) but runs on an isolated AgentMint cloud sandbox with
-independent credentials.
+Every `delegate_task(background=True)` call in Hermes hits the server-side
+`agent.run.stateless` method. AgentMint maintains a fixed pool of warm
+keep-alive boxes; each call acquires one, runs the prompt, wipes
+`/workspace`, and releases the box on completion. Zero cold start; no
+client-side mint or destroy.
+
+Matches Hermes-native delegate_task semantics (stateless per call) on
+isolated AgentMint cloud sandboxes with server-managed credentials.
 
 Use this when you want:
   - Hermes' native ergonomics preserved (no agent_name, no pre-mint)
   - Multi-subagent fan-out via tasks=[...] (each task is its own
-    isolated subagent automatically)
+    isolated cloud sandbox automatically)
   - Cloud isolation without local CPU/RAM consumption
 
 Don't use this when you want a subagent that REMEMBERS across calls —
@@ -25,7 +28,8 @@ Prerequisites:
 
     2. pip install agentmint-hermes-runner (in Hermes' venv)
 
-Cost per call: ~$0.16 USDC (0.10 create + 0.05 run + 0.01 delete).
+Cost per call: smoothed $0.01–$0.075 USDC (same band as all-inclusive
+`agent.run`), keyed at the principal level. Requires AgentMint API ≥ 0.8.0.
 
 Drop this snippet into your Hermes gateway startup BEFORE any
 delegate_task(background=True) call.
@@ -47,13 +51,10 @@ def main() -> None:
     # No default_agent_name → ephemeral mode auto-detected.
     install_delegate_task_wrapper(
         dispatcher=dispatcher,
-        # Optional overrides:
-        ephemeral_harness="opencode",
-        ephemeral_model="openrouter/fusion",
         poll_interval=5.0,
     )
     # That's it. Every delegate_task(background=True) inside Hermes now
-    # mints a fresh AgentMint subagent, runs it, and cleans up on completion.
+    # hits agent.run.stateless server-side. AgentMint owns the lifecycle.
 
 
 if __name__ == "__main__":
