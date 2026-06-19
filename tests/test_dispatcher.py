@@ -68,3 +68,32 @@ def test_list_returns_records():
     agents = dispatcher.list()
     assert len(agents) == 2
     assert agents[0].agent_id == "agt_1"
+
+
+def test_dispatch_passes_workspace_files():
+    """workspace_files materialise inputs into the sandbox before the run."""
+    auth = FakeAuth({"status": "dispatched", "run_id": "arun_wf"})
+    dispatcher = AgentMintDispatcher(auth=auth)
+    dispatcher.dispatch(
+        agent_name="hello-bot",
+        goal="analyze the diff",
+        workspace_files=[
+            {"path": "/workspace/diff.txt", "content": "diff --git a/foo b/foo"},
+            {"path": "/workspace/logo.png", "content": "iVBOR...", "encoding": "base64"},
+        ],
+        cleanup_paths=["/workspace/diff.txt", "/workspace/logo.png"],
+    )
+    params = auth.last_envelope["params"]
+    assert len(params["workspace_files"]) == 2
+    assert params["workspace_files"][0]["path"] == "/workspace/diff.txt"
+    assert params["workspace_files"][0]["content"] == "diff --git a/foo b/foo"
+    assert params["workspace_files"][1]["encoding"] == "base64"
+    assert params["cleanup_paths"] == ["/workspace/diff.txt", "/workspace/logo.png"]
+
+
+def test_dispatch_omits_workspace_files_when_unset():
+    auth = FakeAuth({"status": "ok"})
+    dispatcher = AgentMintDispatcher(auth=auth)
+    dispatcher.dispatch(agent_name="hello-bot", goal="hi")
+    params = auth.last_envelope["params"]
+    assert "workspace_files" not in params

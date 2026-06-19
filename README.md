@@ -11,7 +11,7 @@ Python adapter that bridges Hermes' `delegate_task(background=True)` to **named,
 
 ## Status
 
-**v0.7.0** — alpha. Stateless mode was removed (it didn't carry its weight; persistent specialists are AgentMint's actual value prop). Auth backends: `BearerAuth` (Stripe-Link), `TempoAuth` (Tempo USDC.e — Tier 1 direct only; the `delegate_task` patches require Bearer). Requires AgentMint API ≥ 0.7.0.
+**v0.8.0** — alpha. Auth backends: `BearerAuth` (Stripe-Link), `TempoAuth` (Tempo USDC.e — Tier 1 direct only; the `delegate_task` patches require Bearer). Requires AgentMint API ≥ 0.10.0 for `workspace_files` support; ≥ 0.7.0 for the rest.
 
 ## Setup — persistent (default routing)
 
@@ -88,12 +88,16 @@ If you want to drive AgentMint directly without the `delegate_task` patch or the
 ```python
 result = dispatcher.dispatch(
     agent_name="reviewer-myrepo",
-    goal="Review the diff and flag risks.",
+    goal="Review the diff at /workspace/pr-42.diff and flag risks.",
     context="Project at /workspace, Python 3.11, uses Flask + PyJWT.",
     toolsets=["terminal", "file"],     # "web" raises UnsupportedToolset
     role="leaf",                        # or "orchestrator"
     max_iterations=50,
     child_timeout_seconds=600,
+    workspace_files=[                   # ship inputs into the sandbox before the run
+        {"path": "/workspace/pr-42.diff", "content": "diff --git a/foo ..."},
+    ],
+    cleanup_paths=["/workspace/pr-42.diff"],  # wipe them after the run
 )
 
 # Batch dispatch (Hermes tasks=[…] analog):

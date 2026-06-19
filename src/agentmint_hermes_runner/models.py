@@ -58,4 +58,5 @@ class Task:
     role: str = "leaf"
     files: list[dict] | None = None
     cleanup_paths: list[str] | None = None
+    workspace_files: list[dict] | None = None
     hermes_context: dict | None = None

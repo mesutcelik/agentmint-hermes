@@ -74,6 +74,7 @@ class AgentMintDispatcher:
         max_iterations: int | None = None,
         files: list[dict] | None = None,
         cleanup_paths: list[str] | None = None,
+        workspace_files: list[dict] | None = None,
         async_: bool = False,
         hermes_context: dict | None = None,
         child_timeout_seconds: float | None = None,
@@ -98,6 +99,8 @@ class AgentMintDispatcher:
             params["files"] = files
         if cleanup_paths:
             params["cleanup_paths"] = cleanup_paths
+        if workspace_files:
+            params["workspace_files"] = workspace_files
         if async_:
             params["async"] = True
         if hermes_context:
@@ -169,6 +172,7 @@ class AgentMintDispatcher:
                     max_iterations=task.max_iterations,
                     files=task.files,
                     cleanup_paths=task.cleanup_paths,
+                    workspace_files=task.workspace_files,
                     hermes_context=task.hermes_context,
                     child_timeout_seconds=child_timeout_seconds,
                 )
