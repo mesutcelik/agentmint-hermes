@@ -1,17 +1,16 @@
 # agentmint-hermes-runner
 
-Python adapter that bridges Hermes' `delegate_task(background=True)` to **named, persistent AgentMint subagents** — specialists that accumulate `/workspace/MEMORY.md` across calls. Two setup paths; combine freely:
+Python adapter that bridges Hermes' `delegate_task(background=True)` to **named, persistent AgentMint subagents** — specialists that accumulate `/workspace/MEMORY.md` across calls.
 
-| Mode | What it does | Best for |
-|---|---|---|
-| **Persistent** | `delegate_task(background=True)` routes to a pre-minted named subagent (via `default_agent_name`, or via an `agentmint-<name>` entry the LLM passes in `toolsets`). Its `/workspace/MEMORY.md` accumulates across calls. | One long-running specialist that learns OR LLM picking among many specialists per call (via toolset hack — see below) |
-| **Plugin tool** | Hermes auto-discovers a new `agentmint_delegate(agent_name, goal, ...)` tool from this package's entry-point. LLM picks the subagent per call. | Cleaner per-call routing when you can expose a new tool to the LLM |
+One install path: monkey-patch `delegate_task` so every async delegation can route to AgentMint. The LLM picks the target subagent via either `default_agent_name` (set at install) or by including `"agentmint-<name>"` in the `toolsets` list (per-call routing).
 
 > The Hermes-installable skill that drives this adapter lives in a separate catalog repo: **[mesutcelik/agentmint-skills](https://github.com/mesutcelik/agentmint-skills)** — `hermes skills install mesutcelik/agentmint-skills/hermes-delegate-task`. The skill references this package by its PyPI name (`pip install agentmint-hermes-runner`).
 
 ## Status
 
-**v0.8.0** — alpha. Auth backends: `BearerAuth` (Stripe-Link), `TempoAuth` (Tempo USDC.e — Tier 1 direct only; the `delegate_task` patches require Bearer). Requires AgentMint API ≥ 0.10.0 for `workspace_files` support; ≥ 0.7.0 for the rest.
+**v0.9.0** — alpha. Auth backends: `BearerAuth` (any rail — Stripe-Link / x402 / Tempo MPP), `TempoAuth` (Tempo USDC.e — Tier 1 direct only; the `delegate_task` patches require Bearer).
+
+**Breaking change in 0.9.0**: the `agentmint_delegate` plugin tool has been removed. There is now exactly one routing surface — the patched `delegate_task`. If you were using `set_dispatcher(...)` to register the plugin tool, replace it with `install_delegate_task_wrapper(dispatcher, default_agent_name="...")`. The `toolsets=["agentmint-<name>"]` per-call routing hack keeps working unchanged.
 
 ## Setup — persistent (default routing)
 
@@ -47,25 +46,7 @@ The adapter parses `agentmint-pr-reviewer-myrepo` from `toolsets`, routes to tha
 
 This is a **workaround** for Hermes' `delegate_task` not accepting a dispatcher-target argument. A formal proposal is in `docs/hermes-feature-request.md` — when an upstream extension lands, this hack will be deprecated.
 
-## Setup — plugin tool (named fleet, cleanest)
-
-```python
-from agentmint_hermes_runner import AgentMintDispatcher, BearerAuth, set_dispatcher
-
-dispatcher = AgentMintDispatcher(auth=BearerAuth(jwt=os.environ["AGENTMINT_JWT"]))
-set_dispatcher(dispatcher)   # registers agentmint_delegate via the entry-point
-```
-
-Hermes' plugin discovery (`hermes_agent.plugins` entry-point) auto-registers `agentmint_delegate` when this package is pip-installed. The LLM can now call:
-
-```
-agentmint_delegate(agent_name="reviewer-myrepo", goal="Review the diff", async_=True)
-agentmint_delegate(agent_name="support-acme",    goal="Reply to ticket #42", async_=True)
-```
-
-Combine with `install_delegate_task_wrapper(dispatcher, default_agent_name=...)` if you want BOTH `delegate_task` and `agentmint_delegate` to dispatch to AgentMint.
-
-See `examples/persistent.py` and `examples/plugin.py` for complete operator setup snippets.
+See `examples/persistent.py` for a complete operator setup snippet.
 
 ## Install
 
@@ -83,7 +64,7 @@ ruff check .
 
 ## Lower-level surface
 
-If you want to drive AgentMint directly without the `delegate_task` patch or the plugin tool:
+If you want to drive AgentMint directly without the `delegate_task` patch:
 
 ```python
 result = dispatcher.dispatch(

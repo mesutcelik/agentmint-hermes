@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agentmint-hermes-runner"
-version = "0.8.0"
+version = "0.9.0"
 description = "Route Hermes delegate_task(background=True) to named, persistent AgentMint subagents."
 readme = "README.md"
 license = { text = "MIT" }
@@ -28,9 +28,6 @@ dependencies = [
 Homepage = "https://github.com/mesutcelik/agentmint-hermes"
 Repository = "https://github.com/mesutcelik/agentmint-hermes"
 Issues = "https://github.com/mesutcelik/agentmint-hermes/issues"
-
-[project.entry-points."hermes_agent.plugins"]
-agentmint = "agentmint_hermes_runner.hermes_plugin"
 
 [project.optional-dependencies]
 dev = [
