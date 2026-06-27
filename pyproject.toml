@@ -45,5 +45,12 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+# Docstrings in examples contain shell-pastable curl payloads that
+# must stay on single lines for copy-paste ergonomics. JSON literals
+# can't be wrapped across lines without breaking the syntax, so we
+# exempt examples/ from the line-length rule.
+"examples/*.py" = ["E501"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
