@@ -12,39 +12,58 @@ One install path: monkey-patch `delegate_task` so every async delegation can rou
 
 **Breaking change in 0.9.0**: the `agentmint_delegate` plugin tool has been removed. There is now exactly one routing surface — the patched `delegate_task`. If you were using `set_dispatcher(...)` to register the plugin tool, replace it with `install_delegate_task_wrapper(dispatcher, default_agent_name="...")`. The `toolsets=["agentmint-<name>"]` per-call routing hack keeps working unchanged.
 
-## Setup — persistent (default routing)
+## Routing model
 
-Every `delegate_task(background=True)` lands in one named subagent:
+There are exactly two ways the runner picks the target subagent. They serve different intents — don't conflate them.
+
+| `default_agent_name` | Role |
+|---|---|
+| **`"general-worker"`** (or similar generic name) | Catch-all for unrouted delegations. Use when Hermes wants to offload arbitrary subtasks to a single persistent worker whose `MEMORY.md` accumulates as the session breadcrumb trail. **The default should always be a generic worker — never a specialist.** Naming a specialist as the default breaks the moment you add a second specialist. |
+| `None` (no default) | Unrouted delegations fall through to Hermes-native `delegate_task`. Use when AgentMint involvement is opt-in per call. |
+
+| `toolsets=["agentmint-<name>"]` directive | Role |
+|---|---|
+| Per-call specialist routing. LLM dispatches to a specific named expert (`pr-reviewer`, `data-analyst`, `slack-bot`, …). Each specialist has its own MEMORY.md. **Always use this for specialists — not the default slot.** |
+
+### Setup — generic offload
+
+Every unrouted `delegate_task(background=True)` lands in one persistent worker:
 
 ```python
 import os
 from agentmint_hermes_runner import AgentMintDispatcher, BearerAuth, install_delegate_task_wrapper
 
 dispatcher = AgentMintDispatcher(auth=BearerAuth(jwt=os.environ["AGENTMINT_JWT"]))
-install_delegate_task_wrapper(dispatcher, default_agent_name="default-worker")
+install_delegate_task_wrapper(dispatcher, default_agent_name="general-worker")
 ```
 
-Pre-mint `default-worker` once (`agent.create` via curl). Its `MEMORY.md` grows across every delegation.
+Pre-mint `general-worker` once (`agent.create` via curl). Its `MEMORY.md` grows across every delegation that doesn't carry a specialist directive.
 
-## Setup — persistent (per-call routing via toolset hack)
+### Setup — per-call specialist routing
 
-When the LLM should pick a specialist per call, but you don't want to expose a new tool, encode the target name in `toolsets`:
+The LLM picks the target specialist on each call via the `toolsets` list:
 
 ```python
-# Operator wires the adapter the same way — default_agent_name is optional:
-install_delegate_task_wrapper(dispatcher, default_agent_name="default-worker")
+# Operator setup is identical — generic default + LLM-driven overrides.
+install_delegate_task_wrapper(dispatcher, default_agent_name="general-worker")
 
 # The LLM then dispatches like this:
 delegate_task(
     background=True,
-    goal="Review the diff",
-    toolsets=["terminal", "file", "agentmint-pr-reviewer-myrepo"],
+    goal="Review PR 42 in mesutcelik/agentmint-mono",
+    toolsets=["terminal", "file", "agentmint-pr-reviewer"],
 )
 ```
 
-The adapter parses `agentmint-pr-reviewer-myrepo` from `toolsets`, routes to that subagent (overriding `default_agent_name`), and strips the entry from the toolset list before composing the prompt.
+The adapter parses `agentmint-pr-reviewer` from `toolsets`, routes that call to that subagent (overriding `default_agent_name`), and strips the entry from the toolset list before composing the prompt the subagent receives.
 
-This is a **workaround** for Hermes' `delegate_task` not accepting a dispatcher-target argument. A formal proposal is in `docs/hermes-feature-request.md` — when an upstream extension lands, this hack will be deprecated.
+This is a **workaround** for Hermes' `delegate_task` not accepting a dispatcher-target argument. A formal proposal is in `docs/hermes-feature-request.md` — when an upstream extension lands, this hack will be deprecated in favor of a first-class `dispatcher` or `metadata` parameter.
+
+### Pattern discipline
+
+- `default_agent_name` → generic worker only (`general-worker`, `default-worker`, etc.)
+- Specialists → only via `toolsets=["agentmint-<name>"]`
+- Never name a specialist as the default. Specialists scale; defaults are catch-all.
 
 See `examples/persistent.py` for a complete operator setup snippet.
 
