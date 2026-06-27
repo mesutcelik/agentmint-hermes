@@ -35,7 +35,7 @@ Prerequisites:
          -H 'Content-Type: application/json' \\
          -d '{"jsonrpc":"2.0","id":1,"method":"agent.create",
               "params":{"name":"general-worker","mode":"all-inclusive",
-                        "persona":"You are a general-purpose worker. Handle whatever delegation you receive. Append a 1-2 sentence summary to /workspace/MEMORY.md after each meaningful run."}}'  # noqa: E501
+                        "persona":"General-purpose worker. Handle whatever delegation you receive. Append a 1-2 sentence summary to /workspace/MEMORY.md after each run."}}'
 
     3. pip install agentmint-hermes-runner inside Hermes' virtualenv.
 
