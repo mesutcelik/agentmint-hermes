@@ -8,9 +8,9 @@ One install path: monkey-patch `delegate_task` so every async delegation can rou
 
 ## Status
 
-**v0.9.0** — alpha. Auth backends: `BearerAuth` (any rail — Stripe-Link / x402 / Tempo MPP), `TempoAuth` (Tempo USDC.e — Tier 1 direct only; the `delegate_task` patches require Bearer).
+**v0.10.0** — alpha. Auth backends: `BearerAuth` (any rail — Stripe-Link / x402 / Tempo MPP), `TempoAuth` (Tempo USDC.e — Tier 1 direct only; the `delegate_task` patches require Bearer).
 
-**Breaking change in 0.9.0**: the `agentmint_delegate` plugin tool has been removed. There is now exactly one routing surface — the patched `delegate_task`. If you were using `set_dispatcher(...)` to register the plugin tool, replace it with `install_delegate_task_wrapper(dispatcher, default_agent_name="...")`. The `toolsets=["agentmint-<name>"]` per-call routing hack keeps working unchanged.
+**New in 0.10.0**: auto-wiring at Hermes boot. `pip install` + one-time `agentmint-hermes-init` + restart = adapter active. No edits to Hermes' startup script needed.
 
 ## Routing model
 
@@ -25,9 +25,24 @@ There are exactly two ways the runner picks the target subagent. They serve diff
 |---|---|
 | Per-call specialist routing. LLM dispatches to a specific named expert (`pr-reviewer`, `data-analyst`, `slack-bot`, …). Each specialist has its own MEMORY.md. **Always use this for specialists — not the default slot.** |
 
-### Setup — generic offload
+### Setup — three commands
 
-Every unrouted `delegate_task(background=True)` lands in one persistent worker:
+```bash
+# 1. Install the runner inside Hermes' Python environment
+pip install agentmint-hermes-runner
+
+# 2. One-time interactive bootstrap — picks a rail, tops up the wallet,
+#    caches the JWT to ~/.agentmint/credentials.json, mints `general-worker`
+agentmint-hermes-init
+
+# 3. Restart Hermes
+#    The runner's `hermes_agent.plugins` entry-point fires at boot,
+#    reads the cached JWT, and auto-wires `delegate_task`.
+```
+
+That's it. Every unrouted `delegate_task(background=True)` now lands in `general-worker` — its `MEMORY.md` grows across every delegation that doesn't carry a specialist directive.
+
+If you'd rather wire the adapter by hand (e.g. you're injecting the JWT from a secret manager, not a file on disk), the lower-level API still works:
 
 ```python
 import os
@@ -37,7 +52,7 @@ dispatcher = AgentMintDispatcher(auth=BearerAuth(jwt=os.environ["AGENTMINT_JWT"]
 install_delegate_task_wrapper(dispatcher, default_agent_name="general-worker")
 ```
 
-Pre-mint `general-worker` once (`agent.create` via curl). Its `MEMORY.md` grows across every delegation that doesn't carry a specialist directive.
+The autoload entry-point becomes a no-op if `AGENTMINT_JWT` is unset AND `~/.agentmint/credentials.json` is absent — safe to leave installed even in setups that bring their own wiring.
 
 ### Setup — per-call specialist routing
 
