@@ -5,9 +5,23 @@ reading a cached Bearer JWT from `$AGENTMINT_JWT` (env, wins if set)
 or `~/.agentmint/credentials.json` (the canonical cache location
 written by `agentmint-hermes-init`).
 
-The whole point: once the operator has run `agentmint-hermes-init`
-once, every subsequent Hermes restart auto-attaches the AgentMint
-adapter. No code change to Hermes' startup script needed.
+**Opt-in routing model.** The autoload installs the patch with
+`default_agent_name=None`, meaning:
+
+  - LLM calls `delegate_task(background=True, toolsets=["agentmint-<name>"])`
+    → routes to that AgentMint subagent
+  - LLM calls `delegate_task(background=True, ...)` WITHOUT the
+    `agentmint-<name>` directive → falls through to Hermes-native
+    `delegate_task` untouched
+
+AgentMint is never picked transparently — the LLM has to ask for it
+via the toolsets directive. Install the `hermes-delegate-task` skill
+(`hermes skills install mesutcelik/agentmint-skills/hermes-delegate-task`)
+so the LLM knows the convention.
+
+The operator can override with `$AGENTMINT_DEFAULT_AGENT_NAME` if
+they want catch-all routing for a specific deployment — but that's
+explicit opt-in.
 
 Failures are logged and swallowed — gateway boot must NOT fail just
 because AgentMint isn't bootstrapped yet. If no JWT is found, the
@@ -28,7 +42,6 @@ logger = logging.getLogger(__name__)
 CREDS_PATH = pathlib.Path.home() / ".agentmint" / "credentials.json"
 ENV_JWT = "AGENTMINT_JWT"
 ENV_DEFAULT_AGENT = "AGENTMINT_DEFAULT_AGENT_NAME"
-DEFAULT_AGENT_FALLBACK = "general-worker"
 
 
 def register(_plugin_context: Any | None = None) -> None:
@@ -53,15 +66,27 @@ def register(_plugin_context: Any | None = None) -> None:
         from .hermes_patch import install_delegate_task_wrapper
 
         dispatcher = AgentMintDispatcher(auth=BearerAuth(jwt=jwt))
-        default_agent = os.environ.get(ENV_DEFAULT_AGENT, DEFAULT_AGENT_FALLBACK)
+        # Opt-in routing: no catch-all. The LLM must include
+        # toolsets=["agentmint-<name>"] for the patch to dispatch to
+        # AgentMint; otherwise the call falls through to Hermes-native.
+        # Operator can override via env to force a catch-all default.
+        default_agent = os.environ.get(ENV_DEFAULT_AGENT) or None
         install_delegate_task_wrapper(
             dispatcher=dispatcher,
             default_agent_name=default_agent,
         )
-        logger.info(
-            "agentmint: auto-wired delegate_task (default_agent=%s)",
-            default_agent,
-        )
+        if default_agent:
+            logger.info(
+                "agentmint: auto-wired delegate_task with catch-all "
+                "default_agent=%s (overridden via %s)",
+                default_agent,
+                ENV_DEFAULT_AGENT,
+            )
+        else:
+            logger.info(
+                "agentmint: auto-wired delegate_task (opt-in routing — "
+                "LLM uses `toolsets=[\"agentmint-<name>\"]` to dispatch)"
+            )
     except Exception:
         logger.exception("agentmint: auto-wire failed; delegate_task unchanged")
 

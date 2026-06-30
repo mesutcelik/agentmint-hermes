@@ -8,48 +8,73 @@ One install path: monkey-patch `delegate_task` so every async delegation can rou
 
 ## Status
 
-**v0.10.0** — alpha. Auth backends: `BearerAuth` (any rail — Stripe-Link / x402 / Tempo MPP), `TempoAuth` (Tempo USDC.e — Tier 1 direct only; the `delegate_task` patches require Bearer).
+**v0.11.0** — alpha. Auth backends: `BearerAuth` (any rail — Stripe-Link / x402 / Tempo MPP), `TempoAuth` (Tempo USDC.e — Tier 1 direct only; the `delegate_task` patches require Bearer).
 
-**New in 0.10.0**: auto-wiring at Hermes boot. `pip install` + one-time `agentmint-hermes-init` + restart = adapter active. No edits to Hermes' startup script needed.
+**Breaking change in 0.11.0**: routing is now strictly **opt-in** via the `toolsets` directive — no catch-all. `agentmint-hermes-init` bootstraps the wallet only; it no longer mints a `general-worker`. The LLM has to include `"agentmint-<name>"` in the `toolsets` list for the patch to dispatch to AgentMint; otherwise `delegate_task` falls through to Hermes-native untouched. Operators mint each subagent separately per use case.
 
 ## Routing model
 
-There are exactly two ways the runner picks the target subagent. They serve different intents — don't conflate them.
+**Opt-in only.** The patched `delegate_task`:
 
-| `default_agent_name` | Role |
-|---|---|
-| **`"general-worker"`** (or similar generic name) | Catch-all for unrouted delegations. Use when Hermes wants to offload arbitrary subtasks to a single persistent worker whose `MEMORY.md` accumulates as the session breadcrumb trail. **The default should always be a generic worker — never a specialist.** Naming a specialist as the default breaks the moment you add a second specialist. |
-| `None` (no default) | Unrouted delegations fall through to Hermes-native `delegate_task`. Use when AgentMint involvement is opt-in per call. |
+- LLM includes `"agentmint-<name>"` in the `toolsets` list → routes to that AgentMint subagent
+- LLM does NOT include the directive → falls through to Hermes-native `delegate_task` unchanged
 
-| `toolsets=["agentmint-<name>"]` directive | Role |
-|---|---|
-| Per-call specialist routing. LLM dispatches to a specific named expert (`pr-reviewer`, `data-analyst`, `slack-bot`, …). Each specialist has its own MEMORY.md. **Always use this for specialists — not the default slot.** |
+There is no catch-all default. AgentMint is never selected transparently — the LLM has to consciously opt in by emitting the toolsets directive. Install the `hermes-delegate-task` skill so the LLM knows the convention.
 
-### Setup — three commands
+If you want a catch-all for a specific deployment, set `$AGENTMINT_DEFAULT_AGENT_NAME` in Hermes' env before boot — explicit override only.
+
+### Setup — four commands
 
 ```bash
 # 1. Install the runner inside Hermes' Python environment
 pip install agentmint-hermes-runner
 
 # 2. One-time interactive bootstrap — picks a rail, tops up the wallet,
-#    caches the JWT to ~/.agentmint/credentials.json, mints `general-worker`
+#    caches the JWT to ~/.agentmint/credentials.json. Does NOT mint any
+#    subagents — that's use-case-specific (next step).
 agentmint-hermes-init
 
-# 3. Restart Hermes
+# 3. Install the routing-convention skill so the LLM knows the
+#    `toolsets=["agentmint-<name>"]` directive exists.
+hermes skills install mesutcelik/agentmint-skills/hermes-delegate-task
+
+# 4. Restart Hermes
 #    The runner's `hermes_agent.plugins` entry-point fires at boot,
-#    reads the cached JWT, and auto-wires `delegate_task`.
+#    reads the cached JWT, and auto-wires `delegate_task` in opt-in mode.
 ```
 
-That's it. Every unrouted `delegate_task(background=True)` now lands in `general-worker` — its `MEMORY.md` grows across every delegation that doesn't carry a specialist directive.
+Then mint subagents per use case (one curl per specialist). For example, a code-review specialist:
 
-If you'd rather wire the adapter by hand (e.g. you're injecting the JWT from a secret manager, not a file on disk), the lower-level API still works:
+```bash
+JWT=$(jq -r '.tokens | to_entries[0].value.access_token' ~/.agentmint/credentials.json)
+curl -X POST https://api.agentmint.store/a2a \
+  -H "Authorization: Bearer $JWT" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"agent.create","params":{
+    "name":"pr-reviewer",
+    "mode":"all-inclusive",
+    "persona":"You review GitHub PRs. Follow the pr-review skill exactly.",
+    "skills":["mesutcelik/agentmint-skills/pr-review"]
+  }}'
+```
+
+After that, the Hermes LLM can dispatch to it:
+
+```python
+delegate_task(
+    background=True,
+    goal="Review PR 42 in owner/repo",
+    toolsets=["terminal", "file", "agentmint-pr-reviewer"],
+)
+```
+
+If you'd rather wire the adapter by hand (e.g. injecting the JWT from a secret manager, not a file on disk), the lower-level API still works:
 
 ```python
 import os
 from agentmint_hermes_runner import AgentMintDispatcher, BearerAuth, install_delegate_task_wrapper
 
 dispatcher = AgentMintDispatcher(auth=BearerAuth(jwt=os.environ["AGENTMINT_JWT"]))
-install_delegate_task_wrapper(dispatcher, default_agent_name="general-worker")
+install_delegate_task_wrapper(dispatcher, default_agent_name=None)
 ```
 
 The autoload entry-point becomes a no-op if `AGENTMINT_JWT` is unset AND `~/.agentmint/credentials.json` is absent — safe to leave installed even in setups that bring their own wiring.

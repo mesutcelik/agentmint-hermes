@@ -4,16 +4,18 @@ Walks the operator through:
   1. Picking a payment rail (Stripe-Link / x402 Base / Tempo MPP)
   2. Topping up a credit wallet (>= $1, default $5)
   3. Caching the JWT to ~/.agentmint/credentials.json
-  4. Minting `general-worker` — the catch-all subagent that handles
-     unrouted `delegate_task` delegations
 
-Idempotent: a second run with an existing credentials.json + an
-already-minted general-worker is a no-op (prints "already set up").
+That's it. The runner ships in **opt-in routing mode**: the LLM has
+to pass `toolsets=["agentmint-<name>"]` for the patch to dispatch
+to AgentMint; otherwise `delegate_task` falls through to Hermes-native.
+There is NO catch-all subagent — the runner mints nothing on the
+operator's behalf.
 
-Strictly generic — no specialist subagents (e.g. pr-reviewer,
-data-analyst, etc.) are minted by this CLI. Specialists are use-case
-specific and belong in operator-side recipes or example skills, not
-in the runtime adapter.
+Operators mint their own subagents per use case (one curl per
+specialist, see SKILL.md). The runner stays generic and use-case-free.
+
+Idempotent: a second run with an existing credentials.json is a no-op
+(prints "JWT found").
 """
 
 from __future__ import annotations
@@ -29,11 +31,6 @@ from typing import Any
 CREDS_DIR = pathlib.Path.home() / ".agentmint"
 CREDS_PATH = CREDS_DIR / "credentials.json"
 ENDPOINT = os.environ.get("AGENTMINT_ENDPOINT", "https://api.agentmint.store/a2a")
-DEFAULT_GENERAL_PERSONA = (
-    "General-purpose worker. Handle whatever delegation you receive. "
-    "Append a 1-2 sentence summary to /workspace/MEMORY.md after each "
-    "meaningful run."
-)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -41,18 +38,13 @@ def main(argv: list[str] | None = None) -> int:
         prog="agentmint-hermes-init",
         description=(
             "First-time AgentMint setup for the Hermes adapter: bootstrap "
-            "a credit wallet (any rail), cache the Bearer JWT, mint the "
-            "catch-all `general-worker` subagent. After running this once "
-            "+ restarting Hermes, `delegate_task(background=True)` "
-            "auto-routes to AgentMint."
-        ),
-    )
-    parser.add_argument(
-        "--default-agent-name",
-        default="general-worker",
-        help=(
-            "Name of the catch-all subagent to mint "
-            "(default: general-worker)."
+            "a credit wallet (any rail) and cache the Bearer JWT. The "
+            "adapter ships in opt-in routing mode — no subagents are "
+            "minted on your behalf. After running this once + installing "
+            "the `hermes-delegate-task` skill + restarting Hermes, the "
+            "LLM can dispatch to your AgentMint subagents using "
+            "`toolsets=[\"agentmint-<name>\"]` in `delegate_task`. "
+            "You mint each subagent separately via the AgentMint API."
         ),
     )
     parser.add_argument(
@@ -78,20 +70,26 @@ def main(argv: list[str] | None = None) -> int:
         print("Bailing — no JWT acquired.", file=sys.stderr)
         return 1
 
-    _ensure_subagent(jwt, args.default_agent_name)
-
     print()
-    print(_check(), "Setup complete. Restart Hermes to activate the adapter.")
+    print(_check(), "Wallet bootstrapped. Next:")
     print()
-    print("Then in Hermes, try a delegation:")
+    print("  1. Install the LLM-facing routing skill in Hermes:")
+    print("       hermes skills install mesutcelik/agentmint-skills/hermes-delegate-task")
+    print()
+    print("  2. Mint one or more subagents (one per use case). The JWT cache")
+    print(f"     is at {CREDS_PATH}; extract token, then:")
+    print("       curl -X POST https://api.agentmint.store/a2a \\")
+    print('         -H "Authorization: Bearer $AGENTMINT_JWT" \\')
+    print("         -H 'Content-Type: application/json' \\")
+    print("         -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"agent.create\",")
+    print("              \"params\":{\"name\":\"<name>\",\"mode\":\"all-inclusive\",")
+    print("                        \"persona\":\"<what this subagent does>\"}}'")
+    print()
+    print("  3. Restart Hermes — the adapter auto-attaches at boot.")
+    print()
     print(
-        '    > delegate this to background via delegate_task: '
-        '"say hello and tell me what you remember"'
-    )
-    print()
-    print(
-        "Specialists (subagents addressed via `toolsets=[\"agentmint-<name>\"]`)"
-        " must be pre-minted separately — see SKILL.md."
+        "Then in Hermes, the LLM dispatches by including "
+        "`agentmint-<name>` in delegate_task's toolsets list."
     )
     return 0
 
@@ -240,84 +238,11 @@ def _cache_jwt(jwt: str, principal: str) -> None:
 
 
 # ────────────────────────────────────────────────────────────────────
-# Step 4: ensure the catch-all subagent exists
-# ────────────────────────────────────────────────────────────────────
-
-def _ensure_subagent(jwt: str, name: str) -> None:
-    """Mint the named subagent if it doesn't exist yet. Idempotent."""
-    import httpx
-
-    headers = {
-        "Authorization": f"Bearer {jwt}",
-        "Content-Type": "application/json",
-    }
-
-    try:
-        list_r = httpx.post(
-            ENDPOINT,
-            headers=headers,
-            json={"jsonrpc": "2.0", "id": 1, "method": "agent.list", "params": {}},
-            timeout=30,
-        )
-        list_r.raise_for_status()
-        agents = (list_r.json().get("result") or {}).get("agents") or []
-    except Exception as e:
-        print(
-            f"{_warn()} couldn't check existing agents ({e}); attempting mint anyway",
-            file=sys.stderr,
-        )
-        agents = []
-
-    for a in agents:
-        if a.get("name") == name:
-            print(_check(), f"{name} already exists ({a.get('agent_id')})")
-            return
-
-    print(f"Minting {name} ($0.10 from credit wallet)...")
-    try:
-        mint_r = httpx.post(
-            ENDPOINT,
-            headers=headers,
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "agent.create",
-                "params": {
-                    "name": name,
-                    "mode": "all-inclusive",
-                    "persona": DEFAULT_GENERAL_PERSONA,
-                },
-            },
-            timeout=60,
-        )
-    except Exception as e:
-        print(f"{_cross()} mint failed: {e}", file=sys.stderr)
-        return
-
-    body = mint_r.json()
-    if "error" in body:
-        print(f"{_cross()} mint failed: {body['error']}", file=sys.stderr)
-        return
-    result = body.get("result") or {}
-    agent_id = result.get("agent_id")
-    balance = ((result.get("_credits") or {}).get("balance_usd_after"))
-    print(_check(), f"Minted {name} ({agent_id}). Wallet balance: ${balance}")
-
-
-# ────────────────────────────────────────────────────────────────────
 # Pretty-print helpers
 # ────────────────────────────────────────────────────────────────────
 
 def _check() -> str:
     return "[OK]"
-
-
-def _warn() -> str:
-    return "[WARN]"
-
-
-def _cross() -> str:
-    return "[FAIL]"
 
 
 def _heading(text: str) -> None:
