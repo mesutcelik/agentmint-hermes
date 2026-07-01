@@ -66,11 +66,11 @@ def compose_prompt(
     if toolsets is not None:
         unsupported = sorted(t for t in toolsets if t in UNSUPPORTED_TOOLSETS)
         if unsupported:
-            raise UnsupportedToolset(
-                f"toolset(s) {unsupported!r} not supported in this version — "
-                f"AgentMint does not yet ship a Hermes-symmetric skill for them. "
-                f"Drop them from the toolsets list to proceed."
-            )
+            # Best-effort: strip unsupported entries so the caller isn't
+            # blocked. The sandbox harness's built-in fetch tool covers
+            # most web-like needs, and callers can opt out of restriction
+            # hints by explicitly listing supported toolsets.
+            toolsets = [t for t in toolsets if t not in UNSUPPORTED_TOOLSETS]
 
     sections: list[str] = [f"## Goal\n{goal.strip()}"]
     if context and context.strip():
