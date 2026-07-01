@@ -37,7 +37,7 @@ from .dispatcher import AgentMintDispatcher
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timeout"})
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "canceled", "timeout"})
 
 # Matches `agentmint-<name>` where <name> follows AgentMint's
 # AGENT_NAME_RE on the server side: lowercase alphanumeric, dash,
